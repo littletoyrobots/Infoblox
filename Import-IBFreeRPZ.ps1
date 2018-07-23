@@ -1,28 +1,28 @@
-Function Get-IBRpzExportObjectFromFile {
+Function Get-IBRpzHashFromFile {
     <#
     .SYNOPSIS
     Generate an object with the properties of the CSV export for RPZs
-    
+
     .PARAMETER File
     Input file
-    
+
     .PARAMETER Domains
     Switch variable to describe the format of the file
-    
+
     .PARAMETER Hosts
     Switch variable to describe the format of the file
-    
+
     .PARAMETER IPs
     Switch variable to describe the format of the file
-    
+
     .PARAMETER ParentZone
-    Name of the RPZ Zone to which we'll target for import. 
-    
+    Name of the RPZ Zone to which we'll target for import.
+
     .PARAMETER Source
     Name of the source of the hosts for blacklisting
-    
+
     .PARAMETER View
-    The RPZ view in which we'll be commiting these.  
+    The RPZ view in which we'll be commiting these.
     #>
     [CmdLetBinding()]
     Param (
@@ -38,100 +38,83 @@ Function Get-IBRpzExportObjectFromFile {
     #define a regex to return first NON-whitespace character
     [regex]$r = "\S"
 
-    if (-Not (Get-Item $File -ea "SilentlyContinue").Exists) { 
+    if (-Not (Get-Item $File -ea "SilentlyContinue").Exists) {
         Write-Error "$File does not exist"
-        return 
-    }
-
-    # Strip out any lines beginning with # and blank lines
-    $hostsData = Get-Content $File | where { (($r.Match($_)).value -ne "#") -and ($_ -notmatch "^\s+$") -and ($_.Length -gt 0) }
-  
-    if ( -Not $hostsData ) { 
-        Write-Warning "$File has no entries in its domain file." 
         return
     }
 
-    $Results = @()
-    
-    #only process if something was found in HOSTS file
-    $hostsData | foreach {
+    # Strip out any lines beginning with # and blank lines
+    $hostsData = Get-Content $File | Where-Object { (($r.Match($_)).value -ne "#") -and ($_ -notmatch "^\s+$") -and ($_.Length -gt 0) }
 
+    if ( -Not $hostsData ) {
+        Write-Warning "$File has no entries in its domain file."
+        return
+    }
+
+    # $Results = @()
+    $ResultHash = @{}
+    #only process if something was found in HOSTS file
+    $hostsData | ForEach-Object {
+        $fqdn = ""
         #created named values
-        if ( $Domains ) { 
+        if ( $Domains ) {
             # I'm expecting the format
             #       badguy.com  comment comment ...
             $_ -match "\s+(?<FQDN>\S+)" | Out-Null
             $fqdn = $Matches.FQDN.ToLower()
         }
-        if ( $Hosts ) { 
+        if ( $Hosts ) {
             # I'm expecting the format
             #       127.0.0.1   badguy.com # comment
-            $_ -match "(?<IP>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s+(?<FQDN>\S+)" | Out-Null 
+            $_ -match "(?<IP>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s+(?<FQDN>\S+)" | Out-Null
             $fqdn = $Matches.FQDN.ToLower()
         }
-        if ( $IPs ) { 
+        if ( $IPs ) {
             # I'm expecting the format
             #       123.123.123.123 # comment
             $_ -match "(?<IP>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})" | Out-Null
             $fqdn = $Matches.IP
         }
-        
-        if ( $Domains -or $Hosts ) { 
-            $Results += [PSCustomObject]@{
-                'header-responsepolicycnamerecord' = "responsepolicycnamerecord"
-                'fqdn*'                            = "$fqdn.$ParentZone"
-                '_new_fqdn'                        = ""
-                'canonical_name'                   = ""
-                'comment'                          = "Source: $Source"
-                'disabled'                         = ""
-                'parent_zone'                      = $ParentZone
-                'ttl'                              = ""
-                'view'                             = $View
-            }
-        } 
-        if ( $IPs ) {
-            $Results += [PSCustomObject]@{
-                'header-responsepolicycnamerecord' = "responsepolicycnamerecord"
-                'fqdn*'                            = "$fqdn.$ParentZone"
-                '_new_fqdn'                        = ""
-                'canonical_name'                   = ""
-                'comment'                          = "Source: $Source"
-                'disabled'                         = ""
-                'parent_zone'                      = $ParentZone
-                'ttl'                              = ""
-                'view'                             = $View
-            }
+
+        if ($fqdn -eq "localhost") { Write-Verbose "Ignoring Localhost import"  }
+        elseif ( $ResultHash.ContainsKey("$fqdn.$ParentZone")) {
+            Write-Verbose "$file`: Import Duplicate found: $fqdn"
         }
+        else {
+            $ResultHash.add( "$fqdn.$ParentZone", $source )
+        }
+
     } #end ForEach
 
-    Write-Verbose "Found $($Results.Count) entries in $File"
-    return $Results
-} 
+    Write-Verbose "Found $($ResultHash.Count) entries in $File"
+
+    return $ResultHash
+}
 
 Function Download-Files {
     <#
     .SYNOPSIS
     Helper function to either download or copy files
-    
+
     .DESCRIPTION
     Helper function to either download or copy files
-    
+
     .PARAMETER Path
     Paths to files.  Can be either local paths, or remote.  If remote, be sure
     to prefix with 'http://' or 'https://'
-    
+
     .PARAMETER DownloadsLocation
     Location where the downloaded and referenced files will reside for import.
     Defaults to $env:TEMP
-    
+
     .PARAMETER DomainList
-    Switch Parameter to let the function know to add the '-Domain.txt' suffix 
+    Switch Parameter to let the function know to add the '-Domain.txt' suffix
     to the file.
-    
+
     .PARAMETER HostList
     Switch Parameter to let the function know to add the '-Hosts.txt' suffix
     to the file.
-    
+
     .PARAMETER IPList
     Switch Parameter to let the function know to add the '-IPs.txt' suffix
     to the file.
@@ -146,7 +129,7 @@ Function Download-Files {
         [switch]$IPList
     )
 
-    begin { 
+    begin {
         # Powershell defaults to TLS 1.0
         [Net.ServicePointManager]::SecurityProtocol = "tls12, tls11, tls"
     }
@@ -154,23 +137,23 @@ Function Download-Files {
     process {
         if ($false -eq (Test-Path $DownloadsLocation)) {
             Write-Verbose "Download File Location $DownloadsLocation Does Not Exist - Creating Directory"
-            New-Item -ItemType directory -Path $DownloadsLocation -ErrorAction Stop
+            New-Item -ItemType directory -Path $DownloadsLocation -ErrorAction Stop | Out-Null
         }
 
         $FileList = @()
 
         foreach ( $Destination in $Path ) {
-            # For urls as paths. 
-            if ( ($Destination -match "http://") -or ($Destination -match "https://")) { 
-                $DestHost = ([system.uri]$Destination).Host
+            # For urls as paths.
+            if ( ($Destination -match "http://") -or ($Destination -match "https://")) {
+                $DestHost = ([system.uri]$Destination).AbsoluteURI -replace '[^\x30-\x39\x41-\x5A\x61-\x7A]+', '-'
                 if ( $DomainList ) { $DestFile = Join-Path $DownloadsLocation -ChildPath "$DestHost-Domains.txt" }
                 elseif ( $HostList ) { $DestFile = Join-Path $DownloadsLocation -ChildPath "$DestHost-Hosts.txt" }
                 elseif ( $IPList ) { $DestFile = Join-Path $DownloadsLocation -ChildPath "$DestHost-IPs.txt" }
                 else { Write-Error "Download type not specified for $Destination" }
 
-                if (Test-Path $DestFile) { 
+                if (Test-Path $DestFile) {
                     Write-Verbose "Previous version of $Destfile already exists.  Deleting."
-                    remove-item $DestFile 
+                    remove-item $DestFile
                 }
                 Write-Verbose "Downloading from $Destination"
                 Invoke-WebRequest -Uri $Destination -OutFile $DestFile
@@ -184,9 +167,9 @@ Function Download-Files {
                 elseif ( $IPList ) { $DestFile = Join-Path $DownloadsLocation -ChildPath "$DestHost-IPs.txt" }
                 else { Write-Error "Download type not specified for $Destination" }
 
-                if (Test-Path $DestFile) { 
+                if (Test-Path $DestFile) {
                     Write-Verbose "Previous version of $Destfile already exists.  Deleting."
-                    remove-item $DestFile 
+                    remove-item $DestFile
                 }
                 Write-Verbose "Copying $Destination to $DownloadsLocation"
                 Copy-Item $Destination $DestFile
@@ -194,15 +177,46 @@ Function Download-Files {
             }
         }
         return $FileList
-    } 
-    
+    }
+
     end { }
 }
+
+
+# https://powershell.org/2013/01/23/join-powershell-hash-tables/
+Function Join-Hashtable {
+    [cmdletbinding()]
+    Param (
+        [hashtable]$First,
+        [hashtable]$Second
+        #$First,
+        #$Second
+    )
+
+    #create clones of hashtables so originals are not modified
+    $Primary = $First.Clone()
+    $Secondary = $Second.Clone()
+
+    #check for any duplicate keys
+    $duplicates = $Primary.keys | Where-Object {$Secondary.ContainsKey($_)}
+    if ($duplicates) {
+        foreach ($item in $duplicates) {
+            #            Write-Verbose "Duplicate key $item"
+            $Secondary.Remove($item)
+        }
+    }
+
+    #join the two hash tables
+    $Primary + $Secondary
+
+} #end Join-Hashtable
+
 
 Function Process-RPZObjects {
     Param (
         $ParentZone,
-        [pscustomobject[]]$RecordResults,
+        $View,
+        $ResultHash,
         [switch]$Names,
         [switch]$IPs
     )
@@ -210,14 +224,14 @@ Function Process-RPZObjects {
     if ( $Names ) { $Type = "Name" }
     if ( $IPs ) { $Type = "IP" }
 
-    $UniqueRecordResults = ($RecordResults | Sort 'fqdn*' -Unique).Count
-    $TotalRecordResults = $RecordResults.count
-    Write-Verbose "$TotalRecordResults total $Type records, $UniqueRecordResults unique."
-    $DuplicateRecords = 0
-    $PurgedRecords = 0
+
+    $TotalRecordResults = $ResultHash.Count
+
+    Write-Verbose "$TotalRecordResults total unique $type records"
+
     $StartTime = (get-date)
-    
-    $Activity = "Processing $Type Records" 
+
+    $Activity = "Processing $Type Records"
     # Populate all the name records using our results.
     if ($Names) {
         $oldRecordParams = @{
@@ -226,8 +240,8 @@ Function Process-RPZObjects {
             ReturnAllFields = $true
             Filters         = "zone=$ParentZone"
         }
-    } 
-    elseif ($IPS) { 
+    }
+    elseif ($IPS) {
         $oldRecordParams = @{
             ObjectType      = 'record:rpz:cname:ipaddress'
             MaxResults      = 9999999
@@ -238,7 +252,7 @@ Function Process-RPZObjects {
     $Task = "Retrieving old RPZ $Type Records"
     Write-Progress -Activity $Activity -Status $Task
     $oldRecords = Get-IBObject @oldRecordParams
-        
+
     $Task = "Comparing RPZ $Type Records"
     Write-Progress -Activity $Activity -Status $Task
 
@@ -252,22 +266,23 @@ Function Process-RPZObjects {
     # Populate a second hash with the list of duplicates
     # This is due to limitation of powershell with hashes in foreach loops.
     $dupRecordHash = @{}
-        
-    # and a third for new results. 
+
+    # and a third for new results.
     $newRecordHash = @{}
-    foreach ($result in ($RecordResults | Sort 'fqdn*' -Unique)) {
-        if ($oldRecordHash.ContainsKey($result.'fqdn*')) {
-            $dupRecordHash.Add($result.'fqdn*', "old")
+    foreach ($key in $ResultHash.keys) {
+        if ($oldRecordHash.ContainsKey($key)) {
+            $dupRecordHash.Add($key, "old")
         }
         else {
-            $newRecordHash.Add($result.'fqdn*', "new")  
+            $newRecordHash.Add($key, "new")
         }
     }
-   
+
+    Write-Verbose "Found $($dupRecordHash.Count) pre-existing records."
     foreach ($key in $dupRecordHash.Keys) {
         $oldRecordHash.Remove($key)
     }
-        
+
     # Purging the old
     $StartTime = (Get-Date)
     $count = 1
@@ -276,6 +291,7 @@ Function Process-RPZObjects {
             Remove-IBObject -ObjectRef $oldRecord._ref | Out-Null
             $Task = "Removing old $Type records from RPZ $ParentZone`: $count / $($oldRecordHash.count)"
             Write-Progress -Activity $Activity -Status $Task -PercentComplete (($count / $oldRecordHash.count) * 100)
+            Write-Verbose "Retiring $($oldRecord.name)"
             $count++
         }
     }
@@ -283,72 +299,77 @@ Function Process-RPZObjects {
     $EndTime = (Get-Date)
     $Duration = $EndTime - $StartTime
     Write-Verbose "Elapsed Time: $($Duration.Minutes) Minutes, $($Duration.Seconds) Seconds"
-        
+
     # Adding the new
     $StartTime = (Get-Date)
     $count = 1
-    foreach ($result in ($RecordResults | Sort 'fqdn*' -Unique)) {
-        if ($newRecordHash.ContainsKey($result.'fqdn*')) {
+
+    foreach ($key in $ResultHash.Keys) {
+        if ($newRecordHash.ContainsKey($key)) {
             $NewRecord = @{
-                name      = $result | select -ExpandProperty 'fqdn*'
+                name      = $key
                 canonical = ''
                 rp_zone   = $ParentZone
-                comment   = $result.comment
-                view      = $result.view
+                comment   = "Source: $($ResultHash[$key])"
+                view      = $View
             }
             if ($Names) { New-IBObject -ObjectType 'record:rpz:cname' -IBObject $NewRecord | Out-Null }
-            elseif ($IPS) { new-IBObject -ObjectType 'record:rpz:cname:ipaddress' -IBObject $NewRecord | Out-Null }
+            elseif ($IPS) { New-IBObject -ObjectType 'record:rpz:cname:ipaddress' -IBObject $NewRecord | Out-Null }
             $Task = "Adding new $type records to RPZ $ParentZone`: $count / $($newRecordHash.count)"
             Write-Progress -Activity $Activity -Status $Task -PercentComplete (($count / $newRecordHash.count) * 100)
+            Write-Verbose "Adding $key"
+
             $count++
         }
     }
+
     $EndTime = (Get-Date)
     $Duration = $EndTime - $StartTime
     Write-Verbose "Successfully added $($newRecordHash.count) records"
     Write-Verbose "Elapsed Time: $($Duration.Minutes) Minutes, $($Duration.Seconds) Seconds"
-    
+
     Write-Output "---  Stats ---"
-    Write-Output "$TotalRecordResults total $type records processed, $UniqueRecordResults unique."
+    Write-Output "$TotalRecordResults unique $type records processed"
     Write-Output "$($dupRecordHash.count) existing $type records found already in $Parentzone."
     Write-Output "$($oldRecordHash.count) $type records were retired."
-    Write-Output "$($newRecordHash.count) $type records created"        
+    Write-Output "$($newRecordHash.count) $type records created"
 }
+
 
 Function Import-IBFreeRPZ {
     <#
     .SYNOPSIS
     Imports hosts to an Infoblox RPZ as specified by collected list files.
-    
+
     .DESCRIPTION
     Imports hosts to an Infoblox RPZ as specified by collected list files.
-    
+
     .PARAMETER View
     RPZ View in Infoblow
-    
+
     .PARAMETER ParentZone
     Target RPZ Zone.
-    
+
     .PARAMETER DownloadsLocation
     Location for the downloaded and copied files for processing.  Defaults to
     $env:TEMP
-    
+
     .PARAMETER DomainListFiles
     Parameter description
-    
+
     .PARAMETER HostListFiles
     Parameter description
-    
+
     .PARAMETER IPListFiles
     Parameter description
-    
+
     .PARAMETER OutputToFile
     Parameter description
-    
+
     .EXAMPLE
     An example
-    
- 
+
+
     #>
     [CmdLetBinding(SupportsShouldProcess)]
     Param (
@@ -362,95 +383,152 @@ Function Import-IBFreeRPZ {
         [switch]$AutoUpload
     )
 
-    begin { 
-        # Confirm Posh-IBWAPI loaded and Set-IBWapiConfig 
+    begin {
+        # Confirm Posh-IBWAPI loaded and Set-IBWapiConfig?
     }
 
     process {
         <# Download Section #>
         $Starttime = (get-date)
-        # Download files, or copy them to destination. 
+        # Download files, or copy them to destination.
         $Activity = "Downloading List Files for $ParentZone"
         $TotalFiles = $DomainListFiles.Count + $HostListFiles.Count + $IPListFiles.Count
         $Downloaded = 0
 
-        if ( $DomainListFiles ) { 
+        $DomainListFile = @()
+        $HostListFile = @()
+        $IPListFile = @()
+
+        if ( $DomainListFiles ) {
             $Task = "Downloading Domain List Files"
             Write-Progress -Activity $Activity -Status $Task -PercentComplete ($Downloaded / $TotalFiles * 100)
-            $DomainListFile = Download-Files -Path $DomainListFiles -DownloadsLocation $DownloadsLocation -DomainList
-            Write-Progress -Activity $Activity -Status $Task -PercentComplete ($Downloaded / $TotalFiles * 100)  
+            $DomainListFile += Download-Files -Path $DomainListFiles -DownloadsLocation $DownloadsLocation -DomainList
+            Write-Progress -Activity $Activity -Status $Task -PercentComplete ($Downloaded / $TotalFiles * 100)
+            $Downloaded += $DomainListFile.Count
+            # Write-Output "-- DomainListFiles-- ($($DomainListFile.Count))"
+            # Write-Output $DomainListFile
         }
-        if ( $HostListFiles ) { 
+        if ( $HostListFiles ) {
             $Task = "Downloading Hosts List Files"
             Write-Progress -Activity $Activity -Status $Task -PercentComplete ($Downloaded / $TotalFiles * 100)
             $HostListFile = Download-Files -Path $HostListFiles -DownloadsLocation $DownloadsLocation -HostList
-            $Downloaded += $HostListFiles.Count
-            Write-Progress -Activity $Activity -Status $Task -PercentComplete ($Downloaded / $TotalFiles * 100)          
+            $Downloaded += $HostListFile.Count
+            Write-Progress -Activity $Activity -Status $Task -PercentComplete ($Downloaded / $TotalFiles * 100)
+            # Write-Output "-- HostListFiles-- ($($HostListFile.Count))"
+            # Write-Output $HostListFile
         }
         if ( $IPListFiles ) {
             $Task = "Downloading IP List Files"
             Write-Progress -Activity $Activity -Status $Task -PercentComplete ($Downloaded / $TotalFiles * 100)
             $IPListFile = Download-Files -Path $IPListFiles -DownloadsLocation $DownloadsLocation -IPList
-            $Downloaded += $IPListFiles.Count
+            $Downloaded += $IPListFile.Count
             Write-Progress -Activity $Activity -Status $Task -PercentComplete ($Downloaded / $TotalFiles * 100)
+            # Write-Output "-- IPListFiles -- ($($IPListFile.Count))"
+            # Write-Output $IPListFile
         }
         $EndTime = (get-date)
         $Duration = $EndTime - $StartTime
         Write-Verbose "Elapsed Time: $($Duration.Minutes) Minutes, $($Duration.Seconds) Seconds"
 
         $Activity = "Processing Input Files for $ParentZone"
-        $nameResults = @()
+
+        $nameResultHash = @{}
+        #$nameResultHash.Add("localhost.$ParentZone", "default")
         <# Parse the new files and gather results. #>
         if ( $DomainListFile ) {
             $curCount = 1
             foreach ($file in $DomainListFile) {
                 $Task = "Processing $curCount of $($DomainListFile.Count) domain files"
                 Write-Progress -Activity $Activity -Status $Task -PercentComplete ($curCount / $DomainListFile.Count * 100)
-                $Source = (Get-Item $file).BaseName 
-                $nameResults += Get-IBRpzExportObjectFromFile $file $ParentZone $Source $View -Domains
+                $Source = (Get-Item $file).BaseName
+                $nameResults = Get-IBRpzHashFromFile $file -ParentZone $ParentZone -Source $Source -View $View -Domains
+                Write-Output "DOMAIN: $file had $($nameResults.Count) records"
+                $nameResultHash = Join-Hashtable $nameResultHash $nameResults
                 $curCount++
             }
         }
         if ( $HostListFile ) {
             $curCount = 1
             foreach ($file in $HostListFile) {
-                $Task = "Processing $curCount of $($HostListFile.Count) domain files"
+                $Task = "Processing $curCount of $($HostListFile.Count) host files"
                 Write-Progress -Activity $Activity -Status $Task -PercentComplete ($curCount / $HostListFile.Count * 100)
-                $Source = (Get-Item $file).BaseName 
-                $nameResults += Get-IBRpzExportObjectFromFile $file $ParentZone $Source $View -Hosts
+                $Source = (Get-Item $file).BaseName
+                $nameResults = Get-IBRpzHashFromFile $file $ParentZone $Source $View -Hosts
+                Write-Output "HOST: $file had $($nameResults.Count) records"
+                $nameResultHash = Join-Hashtable $nameResultHash $nameResults
                 $curCount++
             }
         }
+
         if ( $OutputToFile ) {
+            $Results = $null
+            $Results = @()
             $OutputFile = "RPZ-$ParentZone-Names-$(get-date -Format yyyyMMdd).csv"
-            $nameResults | Sort-Object -Property 'fqdn*' -Unique| Export-CSV  -Path $OutputFile -NoTypeInformation
-        }
-        
-        if ( $AutoUpload ) {
-            Process-RPZObjects -ParentZone $ParentZone -RecordResults $nameResults -Names
-        }    
-         
-        $ipResults = @()
-        if ( $IPListFile ) {   
-            $curCount = 1
-            foreach ($file in $IPListFile) {
-                $Task = "Processing $curCount of $($IPListFile.Count) domain files"
-                Write-Progress -Activity $Activity -Status $Task -PercentComplete ($curCount / $IPListFile.Count * 100)
-                $Source = (Get-Item $file).BaseName 
-                $ipResults += Get-IBRpzExportObjectFromFile $file $ParentZone $Source $View -IPs
-                $curCount++
+            foreach ($key in $nameResultHash) {
+                $Results += [PSCustomObject]@{
+                    'header-responsepolicycnamerecord' = "responsepolicycnamerecord"
+                    'fqdn*'                            = "$key"
+                    '_new_fqdn'                        = ""
+                    'canonical_name'                   = ""
+                    'comment'                          = "Source: $($ResultHash[$key])"
+                    'disabled'                         = ""
+                    'parent_zone'                      = $ParentZone
+                    'ttl'                              = ""
+                    'view'                             = $View
+                }
             }
+            $Results | Sort-Object -Property 'fqdn*' -Unique| Export-CSV  -Path $OutputFile -NoTypeInformation
         }
-    
-        if ($OutputToFile) {
-            $OutputFile = "RPZ-$ParentZone-IPs-$(get-date -Format yyyyMMdd).csv"
-            $ipResults | Sort-Object -Property 'fqdn*' -Unique| Export-CSV  -Path $OutputFile -NoTypeInformation
-        } 
+
 
         if ( $AutoUpload ) {
-            Process-RPZObjects -ParentZone $ParentZone -RecordResults $IPResults -IPs
+            Write-Verbose "AutoUpload starting for Names"
+            Process-RPZObjects -ParentZone $ParentZone -ResultHash $nameResultHash -Names -View $View
         }
-     
+
+        #$ipResults = @{}
+        $ipResultHash = [hashtable]@{}
+
+        if ( $IPListFile ) {
+            $curCount = 1
+            foreach ($file in $IPListFile) {
+                $Task = "Processing $curCount of $($IPListFile.Count) ip files"
+                Write-Progress -Activity $Activity -Status $Task -PercentComplete ($curCount / $IPListFile.Count * 100)
+                $Source = (Get-Item $file).BaseName
+                $ipResults = Get-IBRpzHashFromFile $file $ParentZone $Source $View -IPs
+                Write-Output "IP: $file had $($ipResults.Count) records"
+                $ipResultHash = Join-Hashtable $ipResultHash $ipResults
+                $curCount++
+            }
+        }
+
+        if ($OutputToFile) {
+            $Results = $null
+            $Results = @()
+
+            $OutputFile = "RPZ-$ParentZone-IPs-$(get-date -Format yyyyMMdd).csv"
+            foreach ($key in $ipResultHash) {
+                $Results += [PSCustomObject]@{
+                    'header-responsepolicycnamerecord' = "responsepolicycnamerecord"
+                    'fqdn*'                            = "$key"
+                    '_new_fqdn'                        = ""
+                    'canonical_name'                   = ""
+                    'comment'                          = "Source: $($ResultHash[$key])"
+                    'disabled'                         = ""
+                    'parent_zone'                      = $ParentZone
+                    'ttl'                              = ""
+                    'view'                             = $View
+                }
+            }
+
+            $Results | Sort-Object -Property 'fqdn*' -Unique| Export-CSV  -Path $OutputFile -NoTypeInformation
+        }
+
+        if ( $AutoUpload ) {
+            Write-Verbose "AutoUpload starting for IPs"
+            Process-RPZObjects -ParentZone $ParentZone -ResultHash $IPResultHash -IPs -View $View
+        }
+
         Write-Verbose "Completed."
     }
 
